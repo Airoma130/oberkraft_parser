@@ -1,0 +1,203 @@
+import time
+from collections import deque
+from urllib.parse import urljoin, urlparse, urlunparse
+from dataclasses import dataclass
+
+import requests
+from bs4 import BeautifulSoup
+
+
+DEFAULT_START_URL = "http://oberkraft.ru"
+
+def fetch_html(url, delay=1.0):
+    if delay > 0:
+        time.sleep(delay)
+
+    try:
+        response = requests.get(url, timeout=10)
+
+        if response.status_code != 200:
+            print(f"[skip] {url} -> {response.status_code}")
+            return None
+
+        response.encoding = response.apparent_encoding
+        return response.text
+
+    except requests.RequestException as exc:
+        print(f"[error] {url}: {exc}")
+        return None
+
+
+def normalize_url(url):
+    parsed = urlparse(url)
+
+    path = parsed.path
+
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    path = path.replace("//", "/")
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        path,
+        parsed.params,
+        parsed.query,
+        "",
+    ))
+
+
+def make_url(url):
+    url = urljoin(DEFAULT_START_URL, url)
+    return normalize_url(url)
+
+
+def is_product(url):
+    path = urlparse(url).path
+    return path == "/products" or path.startswith("/products/")
+
+
+def is_catalog(url):
+    path = urlparse(url).path
+    return path == "/catalog" or path.startswith("/catalog/")
+
+
+def crawl(start_url):
+    queue = deque([start_url])
+    visited = set()
+    products = {}
+
+    while queue:
+        url = queue.popleft()
+
+        if url in visited:
+            continue
+
+        visited.add(url)
+
+        html = fetch_html(url)
+        if html is None:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for tag in soup.find_all("a", href=True):
+            link = make_url(tag["href"])
+
+            if is_product(link):
+                products[link] = {"url": link}
+
+            elif is_catalog(link) and link not in visited:
+                queue.append(link)
+
+    return products
+
+
+@dataclass
+class Product:
+    article: str
+    name: str = ""
+    description: str = ""
+    url: str = ""
+
+    def to_row(self):
+        return [
+            self.article,
+            self.name,
+            self.description,
+            self.url,
+        ]
+
+
+def parse_product_page(url):
+    html = fetch_html(url)
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    article = ""
+    name = ""
+    description = ""
+
+    card = soup.find(class_="catalog-cards")
+    if not card:
+        print(f"[no card] {url}")
+        return []
+
+    main_info = card.find(class_="main-info")
+    if not main_info:
+            print(f"[no main-info] {url}")
+            return []
+
+    name_tag = main_info.find("h2")
+    if name_tag:
+        name = name_tag.get_text(" ", strip=True)
+
+    table = main_info.find("table")
+
+    if (table):
+        for row in table.find_all("tr"):
+            cells = row.find_all("td")
+            if (len(cells)) < 2:
+                continue
+
+            label = cells[0].get_text(" ", strip=True).rstrip(" :").casefold()
+
+            if "артикул" in label:
+                article = cells[1].get_text(" ", strip=True)
+                break
+
+    if article:
+        description_parts = []
+
+        for p in card.find_all("p", recursive=False):
+            text = p.get_text(" ", strip=True)
+
+            if text:
+                description_parts.append(text)
+
+        description = "\n\n".join(description_parts)
+
+        return [Product(article=article, name=name, url=url, description=description)]
+    
+    else:
+        line = card.find(class_="assortment-line")
+        if not line:
+            print("assortment-line not found")
+            return []
+
+        table = line.find("table")
+        rows = table.find_all("tr")
+
+        products = []
+
+        for row in rows[1:]:
+            cells = row.find_all("td")
+            texts = [cell.get_text(" ", strip=True).casefold() for cell in cells]
+
+            article = texts[0]
+            name = texts[1]
+
+            products.append(Product(article=article, name=name, url=url, description=description))
+
+        return products
+
+    
+def extract_data_from_products(products):
+    all_products = []
+
+    for url in products:
+        all_products.extend(parse_product_page(url))
+
+    return all_products
+
+
+def main():
+    products = crawl(
+        DEFAULT_START_URL,
+    )
+
+    all_products = extract_data_from_products(products)
+
+
+if __name__ == "__main__":
+    main()
