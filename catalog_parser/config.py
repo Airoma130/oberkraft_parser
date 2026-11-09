@@ -1,0 +1,4 @@
+DEFAULT_START_URL = "http://oberkraft.ru"
+
+REQUEST_TIMEOUT = 10
+REQUEST_DELAY = 0.7
