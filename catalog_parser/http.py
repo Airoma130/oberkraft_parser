@@ -1,6 +1,19 @@
 import time
+import threading
 import requests
 from .config import REQUEST_DELAY, REQUEST_TIMEOUT
+
+thread_local = threading.local()
+
+
+def get_session():
+    session = getattr(thread_local, "session", None)
+    
+    if session is None:
+        session = requests.Session()
+        thread_local.session = session
+        
+    return session
 
 
 def fetch_html(url, delay=REQUEST_DELAY):
@@ -8,7 +21,11 @@ def fetch_html(url, delay=REQUEST_DELAY):
         time.sleep(delay)
 
     try:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT)
+        response = get_session().get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
 
         if response.status_code != 200:
             print(f"[skip] {url} -> {response.status_code}")

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 class Product:
     article: str
     name: str = ""
-    description: str = ""
     url: str = ""
+    description: str = ""
 
     def to_row(self):
         return [

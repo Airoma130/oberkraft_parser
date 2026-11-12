@@ -1,7 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from bs4 import BeautifulSoup
 
 from .http import fetch_html
 from .products import Product
+from .config import REQUEST_WORKERS
 
 
 def parse_product_page(url):
@@ -92,21 +95,59 @@ def parse_product_page(url):
     return products
 
 
-def extract_data_from_products(products):
-    all_products = {}
+def collect_products_parallel(product_urls, workers=REQUEST_WORKERS):
+    unique_products = {}
+    lock = Lock()
+    total = len(product_urls)
 
-    for url in products:
-        result = parse_product_page(url)
+    def process_batch(urls_slice):
+        local_results = []
+        for url in urls_slice:
+            res = parse_product_page(url)
+            local_results.extend(res)
+        return local_results
 
-        for prod in result:
-            key = prod.article.strip().casefold()
+    if workers <= 1:
+        for i, url in enumerate(product_urls, start=1):
+            result = parse_product_page(url)
+            
+            with lock:
+                for product in result:
+                    key = product.article.strip().casefold()
+                    if not key:
+                        continue
+                    
+                    old = unique_products.get(key)
+                    if old is None or len(product.description) > len(old.description):
+                        unique_products[key] = product
+                
+        return unique_products
 
-            if not key:
-                continue
+    chunk_size = max(1, total // (workers * 10))
+    
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = []
+        current_chunk = []
+        
+        for i, url in enumerate(product_urls):
+            current_chunk.append(url)
+            if len(current_chunk) >= chunk_size or i == total - 1:
+                futures.append(executor.submit(process_batch, current_chunk))
+                current_chunk = []
+                
+        completed_count = 0
+        for future in as_completed(futures):
+            batch_results = future.result()
+            completed_count += len(batch_results)
+            
+            with lock:
+                for product in batch_results:
+                    key = product.article.strip().casefold()
+                    if not key:
+                        continue
+                        
+                    old = unique_products.get(key)
+                    if old is None:
+                        unique_products[key] = product
 
-            old = all_products.get(key)
-
-            if old is None:
-                all_products[key] = prod
-
-    return all_products
+    return unique_products
